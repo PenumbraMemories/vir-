@@ -157,7 +157,7 @@ export default {
       processor: null,
       audioBuffer: [],
       lastBotMessage: '',
-      difyApiKey: 'app-O02XuoibLlIrRgJ54WbNayWr',
+      difyApiKey: '输入dify对应agent的api',
       difyApiUrl: 'https://api.dify.ai/v1',
       conversationId: null,
       userId: 'user-' + Math.random().toString(36).substring(7),
