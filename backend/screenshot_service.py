@@ -1,3 +1,4 @@
+#[ACTION:SCREENSHOT]
 from fastapi import FastAPI, Body
 from fastapi.middleware.cors import CORSMiddleware
 import pyautogui
@@ -56,9 +57,8 @@ async def take_screenshot(payload: dict = Body(...)):
         # 执行截图
         screenshot = pyautogui.screenshot()
 
-        # 生成文件名（使用时间戳）
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"screenshot_{timestamp}.png"
+        # 使用固定文件名
+        filename = "1.png"
         filepath = os.path.join(SCREENSHOT_DIR, filename)
 
         # 保存截图

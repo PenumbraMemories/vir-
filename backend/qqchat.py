@@ -1,3 +1,6 @@
+#[ACTION:SEND]
+#[ACTION:SELECTFRIEND]
+#[ACTION:SENDFILE]
 import win32gui
 import win32con
 import win32api
@@ -6,10 +9,12 @@ import time
 import re
 import os
 import logging
-from ctypes import wintypes
+from ctypes import wintypes, windll, c_int, c_uint, c_bool, POINTER, byref
 from fastapi import FastAPI, Body
 from fastapi.middleware.cors import CORSMiddleware
 from pathlib import Path
+import ctypes
+from ctypes import wintypes
 
 # 配置日志
 logging.basicConfig(
@@ -28,6 +33,246 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Windows API 常量定义
+SPI_SETFOREGROUNDLOCKTIMEOUT = 0x2001
+SPI_GETFOREGROUNDLOCKTIMEOUT = 0x2000
+INPUT_KEYBOARD = 1
+KEYEVENTF_KEYUP = 0x0002
+KEYEVENTF_SCANCODE = 0x0008
+
+# 定义输入结构体
+class KEYBDINPUT(ctypes.Structure):
+    _fields_ = (("wVk", ctypes.c_ushort),
+                ("wScan", ctypes.c_ushort),
+                ("dwFlags", ctypes.c_ulong),
+                ("time", ctypes.c_ulong),
+                ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)))
+
+class HARDWAREINPUT(ctypes.Structure):
+    _fields_ = (("uMsg", ctypes.c_ulong),
+                ("wParamL", ctypes.c_ushort),
+                ("wParamH", ctypes.c_ushort))
+
+class INPUT_UNION(ctypes.Union):
+    _fields_ = (("ki", KEYBDINPUT),
+                ("mi", ctypes.c_byte * 40),  # 简化鼠标输入
+                ("hi", HARDWAREINPUT))
+
+class INPUT(ctypes.Structure):
+    _fields_ = (("type", ctypes.c_ulong),
+                ("u", INPUT_UNION))
+
+# 加载user32.dll
+user32 = ctypes.windll.user32
+kernel32 = ctypes.windll.kernel32
+
+def disable_foreground_lock_timeout():
+    """禁用前台锁定超时（需要管理员权限）"""
+    try:
+        # 获取当前超时设置
+        timeout = ctypes.c_uint()
+        user32.SystemParametersInfoW(SPI_GETFOREGROUNDLOCKTIMEOUT, 0, byref(timeout), 0)
+        logger.info(f"当前前台锁定超时: {timeout.value} ms")
+        
+        # 设置为0，禁用锁定
+        result = user32.SystemParametersInfoW(SPI_SETFOREGROUNDLOCKTIMEOUT, 0, 0, 0)
+        if result:
+            logger.info("已禁用前台锁定超时")
+            return True
+        else:
+            logger.warning("禁用前台锁定超时失败，可能需要管理员权限")
+            return False
+    except Exception as e:
+        logger.error(f"禁用前台锁定超时失败: {e}")
+        return False
+
+def restore_foreground_lock_timeout(original_timeout=200000):
+    """恢复前台锁定超时"""
+    try:
+        result = user32.SystemParametersInfoW(SPI_SETFOREGROUNDLOCKTIMEOUT, 0, original_timeout, 0)
+        if result:
+            logger.info(f"已恢复前台锁定超时为 {original_timeout} ms")
+            return True
+    except Exception as e:
+        logger.error(f"恢复前台锁定超时失败: {e}")
+    return False
+
+def simulate_alt_key():
+    """模拟Alt键，绕过前台锁定"""
+    try:
+        # 模拟按下Alt键
+        win32api.keybd_event(win32con.VK_MENU, 0, 0, 0)
+        time.sleep(0.05)
+        # 释放Alt键
+        win32api.keybd_event(win32con.VK_MENU, 0, win32con.KEYEVENTF_KEYUP, 0)
+        time.sleep(0.05)
+        logger.debug("模拟Alt键完成")
+        return True
+    except Exception as e:
+        logger.error(f"模拟Alt键失败: {e}")
+        return False
+
+def simulate_alt_tab():
+    """模拟Alt+Tab切换窗口"""
+    try:
+        # 按下Alt
+        win32api.keybd_event(win32con.VK_MENU, 0, 0, 0)
+        time.sleep(0.05)
+        # 按下并释放Tab
+        win32api.keybd_event(win32con.VK_TAB, 0, 0, 0)
+        time.sleep(0.05)
+        win32api.keybd_event(win32con.VK_TAB, 0, win32con.KEYEVENTF_KEYUP, 0)
+        time.sleep(0.05)
+        # 释放Alt
+        win32api.keybd_event(win32con.VK_MENU, 0, win32con.KEYEVENTF_KEYUP, 0)
+        time.sleep(0.1)
+        logger.debug("模拟Alt+Tab完成")
+        return True
+    except Exception as e:
+        logger.error(f"模拟Alt+Tab失败: {e}")
+        return False
+
+def attach_thread_input(hwnd_target, attach=True):
+    """附加线程输入，使当前线程可以控制目标窗口的输入"""
+    try:
+        current_thread = user32.GetWindowThreadProcessId(user32.GetForegroundWindow(), None)
+        target_thread = user32.GetWindowThreadProcessId(hwnd_target, None)
+        
+        if attach:
+            result = user32.AttachThreadInput(current_thread, target_thread, c_bool(True))
+            if result:
+                logger.debug("线程输入附加成功")
+                return True
+        else:
+            user32.AttachThreadInput(current_thread, target_thread, c_bool(False))
+        return False
+    except Exception as e:
+        logger.error(f"附加线程输入失败: {e}")
+        return False
+
+def force_set_foreground_window(hwnd):
+    """强制将窗口设置为前台窗口（多种方法组合）"""
+    logger.info(f"尝试强制激活窗口: {hex(hwnd)}")
+    
+    # 方法1：如果窗口最小化，先恢复
+    if win32gui.IsIconic(hwnd):
+        win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+        time.sleep(0.1)
+    
+    # 方法2：使用模拟Alt键
+    simulate_alt_key()
+    
+    # 方法3：先尝试普通激活
+    try:
+        win32gui.SetForegroundWindow(hwnd)
+        time.sleep(0.1)
+        if win32gui.GetForegroundWindow() == hwnd:
+            logger.info("方法3成功：普通激活")
+            return True
+    except:
+        pass
+    
+    # 方法4：使用附加线程输入
+    try:
+        attach_thread_input(hwnd, True)
+        win32gui.SetForegroundWindow(hwnd)
+        time.sleep(0.1)
+        attach_thread_input(hwnd, False)
+        if win32gui.GetForegroundWindow() == hwnd:
+            logger.info("方法4成功：附加线程输入激活")
+            return True
+    except:
+        pass
+    
+    # 方法5：使用BringWindowToTop组合
+    try:
+        win32gui.BringWindowToTop(hwnd)
+        win32gui.SetWindowPos(hwnd, win32con.HWND_TOPMOST, 0, 0, 0, 0, 
+                             win32con.SWP_NOMOVE | win32con.SWP_NOSIZE)
+        time.sleep(0.1)
+        win32gui.SetWindowPos(hwnd, win32con.HWND_NOTOPMOST, 0, 0, 0, 0,
+                             win32con.SWP_NOMOVE | win32con.SWP_NOSIZE)
+        win32gui.SetForegroundWindow(hwnd)
+        if win32gui.GetForegroundWindow() == hwnd:
+            logger.info("方法5成功：置顶技巧激活")
+            return True
+    except:
+        pass
+    
+    # 方法6：使用模拟鼠标点击
+    try:
+        rect = win32gui.GetWindowRect(hwnd)
+        x = rect[0] + (rect[2] - rect[0]) // 2
+        y = rect[1] + 50  # 点击窗口标题栏位置
+        
+        # 保存当前鼠标位置
+        old_pos = win32api.GetCursorPos()
+        
+        # 移动鼠标并点击
+        win32api.SetCursorPos((x, y))
+        time.sleep(0.1)
+        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+        time.sleep(0.05)
+        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+        time.sleep(0.1)
+        
+        # 恢复鼠标位置
+        win32api.SetCursorPos(old_pos)
+        
+        if win32gui.GetForegroundWindow() == hwnd:
+            logger.info("方法6成功：模拟鼠标点击激活")
+            return True
+    except:
+        pass
+    
+    # 方法7：使用ShowWindow和SetActiveWindow组合
+    try:
+        win32gui.ShowWindow(hwnd, win32con.SW_SHOW)
+        win32gui.SetActiveWindow(hwnd)
+        win32gui.SetForegroundWindow(hwnd)
+        time.sleep(0.1)
+        if win32gui.GetForegroundWindow() == hwnd:
+            logger.info("方法7成功：ShowWindow+SetActiveWindow激活")
+            return True
+    except:
+        pass
+    
+    logger.warning(f"所有激活方法均失败，窗口: {win32gui.GetWindowText(hwnd)}")
+    return False
+
+def activate_window(hwnd, max_retries=3):
+    """激活窗口并确保其获得焦点（增强版）"""
+    for i in range(max_retries):
+        try:
+            # 确保窗口可见
+            if not win32gui.IsWindowVisible(hwnd):
+                win32gui.ShowWindow(hwnd, win32con.SW_SHOW)
+                time.sleep(0.2)
+            
+            # 如果窗口最小化，先恢复
+            if win32gui.IsIconic(hwnd):
+                win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+                time.sleep(0.3)
+            
+            # 使用强制激活方法
+            if force_set_foreground_window(hwnd):
+                time.sleep(0.2)
+                logger.info(f"窗口激活成功: {win32gui.GetWindowText(hwnd)}")
+                return True
+            else:
+                logger.warning(f"窗口激活尝试 {i+1}/{max_retries} 失败")
+                # 尝试Alt+Tab切换到QQ
+                if i < max_retries - 1:
+                    simulate_alt_tab()
+                    time.sleep(0.5)
+                
+        except Exception as e:
+            logger.error(f"激活窗口失败: {e}")
+        
+        time.sleep(0.5)
+    
+    return False
 
 def find_qq_window():
     """查找QQ窗口（支持新版QQ）"""
@@ -63,46 +308,6 @@ def find_chat_window_by_friend(friend_name):
     windows = []
     win32gui.EnumWindows(enum_windows_callback, windows)
     return windows[0] if windows else None
-
-def activate_window(hwnd, max_retries=3):
-    """激活窗口并确保其获得焦点"""
-    for i in range(max_retries):
-        try:
-            # 如果窗口最小化，先恢复
-            if win32gui.IsIconic(hwnd):
-                win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-                time.sleep(0.3)
-            
-            # 显示窗口
-            win32gui.ShowWindow(hwnd, win32con.SW_SHOW)
-            time.sleep(0.1)
-            
-            # 尝试设置前台窗口
-            win32gui.SetForegroundWindow(hwnd)
-            win32gui.BringWindowToTop(hwnd)
-            time.sleep(0.3)
-            
-            # 验证窗口是否成功激活
-            foreground_hwnd = win32gui.GetForegroundWindow()
-            if foreground_hwnd == hwnd:
-                logger.info(f"窗口激活成功: {win32gui.GetWindowText(hwnd)}")
-                return True
-            else:
-                logger.warning(f"窗口激活尝试 {i+1}/{max_retries} 失败")
-                # 使用Alt+Tab尝试切换
-                win32api.keybd_event(win32con.VK_MENU, 0, 0, 0)
-                win32api.keybd_event(win32con.VK_TAB, 0, 0, 0)
-                time.sleep(0.1)
-                win32api.keybd_event(win32con.VK_TAB, 0, win32con.KEYEVENTF_KEYUP, 0)
-                win32api.keybd_event(win32con.VK_MENU, 0, win32con.KEYEVENTF_KEYUP, 0)
-                time.sleep(0.5)
-                
-        except Exception as e:
-            logger.error(f"激活窗口失败: {e}")
-        
-        time.sleep(0.5)
-    
-    return False
 
 def click_input_area(hwnd):
     """点击聊天窗口的输入区域"""
@@ -546,6 +751,9 @@ def parse_ai_response(ai_text):
 
 def process_ai_commands(ai_text):
     """处理AI命令"""
+    # 尝试禁用前台锁定超时（可选，需要管理员权限）
+    disable_foreground_lock_timeout()
+    
     result = parse_ai_response(ai_text)
     results = []
     success_count = 0
@@ -607,4 +815,5 @@ if __name__ == "__main__":
     print("启动QQ消息服务...")
     print("服务地址: http://0.0.0.0:8002")
     print("API文档: http://0.0.0.0:8002/docs")
+    print("提示: 如果遇到窗口激活问题，可以尝试以管理员权限运行此程序")
     uvicorn.run(app, host="0.0.0.0", port=8002)

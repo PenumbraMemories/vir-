@@ -1,4 +1,4 @@
-
+#[READLOG]
 from fastapi import FastAPI, Body
 from fastapi.middleware.cors import CORSMiddleware
 import logging

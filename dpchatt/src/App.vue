@@ -157,7 +157,8 @@ export default {
       processor: null,
       audioBuffer: [],
       lastBotMessage: '',
-      difyApiKey: '输入dify对应agent的api',
+      lastScreenshotPath: '',
+      difyApiKey: 'app-O02XuoibLlIrRgJ54WbNayWr',
       difyApiUrl: 'https://api.dify.ai/v1',
       conversationId: null,
       userId: 'user-' + Math.random().toString(36).substring(7),
@@ -780,6 +781,8 @@ export default {
             type: 'success',
             message: successMessage
           });
+          // 保存截图路径
+          this.lastScreenshotPath = result.screenshot_path;
           // 可以在这里添加显示截图的逻辑
         } else {
           const errorMessage = `截图失败: ${result.message}`;
@@ -1420,145 +1423,128 @@ ${errorText}`);
           // 创建用于朗读的副本,移除指令
           let speakResponse = aiResponse;
 
-          // 并行执行所有动作
+          // 串行执行所有动作，按照AI回复中ACTION命令出现的顺序
           const actions = [];
 
-          // 检查是否包含截图指令
-          if (aiResponse.includes('[ACTION:SCREENSHOT]')) {
-            actions.push(this.takeScreenshot());
-            // 从朗读内容中移除截图指令
-            speakResponse = speakResponse.replace('[ACTION:SCREENSHOT]', '').trim();
+          // 提取所有ACTION命令及其位置
+          const actionMatches = [];
+          const actionRegex = /\[ACTION:(SCREENSHOT|SENDMESSAGE|SENDFILE|OPENWEBSITE|NOWWINDOWS|TOPWINDOWS|OPENSOFTWARE|OPENCMD)\](?:[^\n[]*)?/g;
+          let match;
+          while ((match = actionRegex.exec(aiResponse)) !== null) {
+            actionMatches.push({
+              type: match[1],
+              fullMatch: match[0],
+              index: match.index
+            });
           }
 
-          // 检查是否包含发送QQ消息指令
-          if (aiResponse.includes('[ACTION:SENDMESSAGE]') && aiResponse.includes('[ACTION:SELECTFRIEND]')) {
-            console.log('检测到QQ消息指令');
-            // 提取消息内容和好友名称
-            const messageMatches = [...aiResponse.matchAll(/\[ACTION:SENDMESSAGE\]([^\n[]*)/g)];
-            const friendMatches = [...aiResponse.matchAll(/\[ACTION:SELECTFRIEND\]([^\n[]*)/g)];
+          // 按照出现顺序处理ACTION命令
+          for (const actionMatch of actionMatches) {
+            const actionType = actionMatch.type;
+            const fullMatch = actionMatch.fullMatch;
 
-            console.log('消息匹配结果:', messageMatches);
-            console.log('好友匹配结果:', friendMatches);
+            switch (actionType) {
+              case 'SCREENSHOT':
+                actions.push({ type: 'SCREENSHOT', action: () => this.takeScreenshot() });
+                speakResponse = speakResponse.replace(fullMatch, '').trim();
+                break;
 
-            if (messageMatches && friendMatches) {
-              // 确保消息和好友数量匹配
-              const count = Math.min(messageMatches.length, friendMatches.length);
-              if (count > 0) {
-                for (let i = 0; i < count; i++) {
-                  const message = messageMatches[i][1].trim();
-                  const friend = friendMatches[i][1].trim();
-                  console.log(`提取的消息 ${i + 1}:`, message);
-                  console.log(`提取的好友 ${i + 1}:`, friend);
-                  // 构建包含标记的消息
-                  const qqMessage = `[ACTION:SELECTFRIEND]${friend}[ACTION:SENDMESSAGE]${message}`;
-                  actions.push(this.sendQQMessage(qqMessage));
+              case 'SENDMESSAGE':
+                // 检查是否有对应的好友选择
+                if (aiResponse.includes('[ACTION:SELECTFRIEND]')) {
+                  const messageMatches = [...aiResponse.matchAll(/\[ACTION:SENDMESSAGE\]([^\n[]*)/g)];
+                  const friendMatches = [...aiResponse.matchAll(/\[ACTION:SELECTFRIEND\]([^\n[]*)/g)];
+                  if (messageMatches && friendMatches && messageMatches.length > 0 && friendMatches.length > 0) {
+                    const message = messageMatches[0][1].trim();
+                    const friend = friendMatches[0][1].trim();
+                    const qqMessage = `[ACTION:SELECTFRIEND]${friend}[ACTION:SENDMESSAGE]${message}`;
+                    actions.push({ type: 'SENDMESSAGE', action: () => this.sendQQMessage(qqMessage) });
+                    speakResponse = speakResponse.replace(/\[ACTION:SENDMESSAGE\][^\n[]*/, '').trim();
+                    speakResponse = speakResponse.replace(/\[ACTION:SELECTFRIEND\][^\n[]*/, '').trim();
+                  }
                 }
+                break;
+
+              case 'SENDFILE': {
+                // 检查是否有对应的好友选择
+                if (aiResponse.includes('[ACTION:SELECTFRIEND]')) {
+                  const fileMatches = [...aiResponse.matchAll(/\[ACTION:SENDFILE\]([^\n[]*)/g)];
+                  const friendMatches = [...aiResponse.matchAll(/\[ACTION:SELECTFRIEND\]([^\n[]*)/g)];
+                  if (fileMatches && friendMatches && fileMatches.length > 0 && friendMatches.length > 0) {
+                    let filePath = fileMatches[0][1].trim();
+                    const friend = friendMatches[0][1].trim();
+                    console.log(`提取的文件路径: ${filePath}`);
+                    console.log(`提取的好友: ${friend}`);
+                    
+                    // 检查文件路径是否是有效的绝对路径
+                    if (!filePath.includes(':\\') && !filePath.startsWith('C:') && !filePath.startsWith('D:')) {
+                      console.log(`文件路径不是有效的绝对路径，使用最近一次截图的路径`);
+                      filePath = this.lastScreenshotPath;
+                    }
+                    
+                    if (filePath) {
+                      const qqMessage = `[ACTION:SELECTFRIEND]${friend}[ACTION:SENDFILE]${filePath}`;
+                      actions.push({ type: 'SENDFILE', action: () => this.sendQQMessage(qqMessage) });
+                    } else {
+                      console.error(`没有可用的文件路径`);
+                    }
+                    speakResponse = speakResponse.replace(/\[ACTION:SENDFILE\][^\n[]*/, '').trim();
+                    speakResponse = speakResponse.replace(/\[ACTION:SELECTFRIEND\][^\n[]*/, '').trim();
+                  }
+                }
+                break;
               }
-            } else {
-              console.log('未能提取消息或好友信息');
-            }
-            // 从朗读内容中移除指令
-            speakResponse = speakResponse.replace(/\[ACTION:SENDMESSAGE\][\s\S]*?\[ACTION:SELECTFRIEND\][\s\S]*?(?=\[|$)/, '').trim();
-          }
 
-          // 检查是否包含发送文件指令
-          if (aiResponse.includes('[ACTION:SENDFILE]') && aiResponse.includes('[ACTION:SELECTFRIEND]')) {
-            console.log('检测到发送文件指令');
-            // 提取文件路径和好友名称
-            const fileMatches = [...aiResponse.matchAll(/\[ACTION:SENDFILE\]([^\n[]*)/g)];
-            const friendMatches = [...aiResponse.matchAll(/\[ACTION:SELECTFRIEND\]([^\n[]*)/g)];
-
-            console.log('文件匹配结果:', fileMatches);
-            console.log('好友匹配结果:', friendMatches);
-
-            if (fileMatches && friendMatches) {
-              // 确保文件和好友数量匹配
-              const count = Math.min(fileMatches.length, friendMatches.length);
-              if (count > 0) {
-                for (let i = 0; i < count; i++) {
-                  const filePath = fileMatches[i][1].trim();
-                  const friend = friendMatches[i][1].trim();
-                  console.log(`提取的文件 ${i + 1}:`, filePath);
-                  console.log(`提取的好友 ${i + 1}:`, friend);
-                  // 构建包含标记的消息
-                  const qqMessage = `[ACTION:SELECTFRIEND]${friend}[ACTION:SENDFILE]${filePath}`;
-                  actions.push(this.sendQQMessage(qqMessage));
+              case 'OPENWEBSITE': {
+                const urlMatch = fullMatch.match(/\[ACTION:OPENWEBSITE\](https?:\/\/[^\s]+)/);
+                if (urlMatch) {
+                  actions.push({ type: 'OPENWEBSITE', action: () => this.openWebsite(urlMatch[1]) });
+                  speakResponse = speakResponse.replace(fullMatch, '').trim();
+                } else {
+                  // 如果回复中没有网址，从聊天记录中提取所有网址并打开
+                  const urlPattern = /https?:\/\/[^\s\]"]+/g;
+                  const urls = aiResponse.match(urlPattern) || [];
+                  if (urls.length > 0) {
+                    const uniqueUrls = [...new Set(urls)];
+                    for (const url of uniqueUrls) {
+                      actions.push({ type: 'OPENWEBSITE', action: () => this.openWebsite(url) });
+                    }
+                  }
+                  speakResponse = speakResponse.replace(fullMatch, '').trim();
                 }
+                break;
               }
-            } else {
-              console.log('未能提取文件或好友信息');
-            }
-            // 从朗读内容中移除指令
-            speakResponse = speakResponse.replace(/\[ACTION:SENDFILE\][\s\S]*?\[ACTION:SELECTFRIEND\][\s\S]*?(?=\[|$)/, '').trim();
-          }
 
-          // 检查是否包含打开网站指令
-          if (aiResponse.includes('[ACTION:OPENWEBSITE]')) {
-            // 从回复中提取网址
-            const urlMatch = aiResponse.match(/\[ACTION:OPENWEBSITE\](https?:\/\/[^\s]+)/);
-            if (urlMatch) {
-              actions.push(this.openWebsite(urlMatch[1]));
-              // 从朗读内容中移除指令和URL
-              speakResponse = speakResponse.replace(/\[ACTION:OPENWEBSITE\]https?:\/\/[^\s]+/, '').trim();
-            } else {
-              // 如果回复中没有网址，从聊天记录中提取所有网址并打开
-              const urlPattern = /https?:\/\/[^\s\]"]+/g;
-              const urls = aiResponse.match(urlPattern) || [];
-              if (urls.length > 0) {
-                // 去重后打开所有网址
-                const uniqueUrls = [...new Set(urls)];
-                for (const url of uniqueUrls) {
-                  actions.push(this.openWebsite(url));
+              case 'NOWWINDOWS':
+                actions.push({ type: 'NOWWINDOWS', action: () => this.getWindows() });
+                speakResponse = speakResponse.replace(fullMatch, '').trim();
+                break;
+
+              case 'TOPWINDOWS': {
+                const windowMatch = fullMatch.match(/\[ACTION:TOPWINDOWS\]([^\n[]*)/);
+                if (windowMatch && windowMatch[1]) {
+                  const windowTitle = windowMatch[1].trim();
+                  actions.push({ type: 'TOPWINDOWS', action: () => this.topWindow(windowTitle) });
+                  speakResponse = speakResponse.replace(fullMatch, '').trim();
                 }
+                break;
               }
-            }
-            // 从朗读内容中移除指令
-            speakResponse = speakResponse.replace('[ACTION:OPENWEBSITE]', '').trim();
-          }
 
-          // 检查是否包含获取窗口列表指令
-          if (aiResponse.includes('[ACTION:NOWWINDOWS]')) {
-            actions.push(this.getWindows());
-            // 从朗读内容中移除指令
-            speakResponse = speakResponse.replace('[ACTION:NOWWINDOWS]', '').trim();
-          }
+              case 'OPENSOFTWARE':
+                actions.push({ type: 'OPENSOFTWARE', action: () => this.openSoftware() });
+                speakResponse = speakResponse.replace(fullMatch, '').trim();
+                break;
 
-          // 检查是否包含置顶窗口指令
-          if (aiResponse.includes('[ACTION:TOPWINDOWS]')) {
-            const windowMatch = aiResponse.match(/\[ACTION:TOPWINDOWS\]([^\n[]*)/);
-            if (windowMatch && windowMatch[1]) {
-              const windowTitle = windowMatch[1].trim();
-              actions.push(this.topWindow(windowTitle));
-              // 从朗读内容中移除指令
-              speakResponse = speakResponse.replace(/\[ACTION:TOPWINDOWS\][^\n[]*/, '').trim();
-            }
-          }
-
-          // 检查是否包含打开软件指令
-          if (aiResponse.includes('[ACTION:OPENSOFTWARE]')) {
-            actions.push(this.openSoftware());
-            // 从朗读内容中移除指令
-            speakResponse = speakResponse.replace('[ACTION:OPENSOFTWARE]', '').trim();
-          }
-
-          // 检查是否包含执行CMD命令指令
-          if (aiResponse.includes('[ACTION:OPENCMD]')) {
-            console.log('检测到CMD命令指令');
-            // 提取命令内容
-            const cmdMatches = [...aiResponse.matchAll(/\[ACTION:OPENCMD\]([^\n[]*)/g)];
-            console.log('CMD命令匹配结果:', cmdMatches);
-
-            if (cmdMatches && cmdMatches.length > 0) {
-              for (const match of cmdMatches) {
-                const cmd = match[1].trim();
-                console.log('提取的CMD命令:', cmd);
-                if (cmd) {
-                  actions.push(this.executeCommand(cmd));
+              case 'OPENCMD': {
+                const cmdMatch = fullMatch.match(/\[ACTION:OPENCMD\]([^\n[]*)/);
+                if (cmdMatch && cmdMatch[1]) {
+                  const cmd = cmdMatch[1].trim();
+                  actions.push({ type: 'OPENCMD', action: () => this.executeCommand(cmd) });
+                  speakResponse = speakResponse.replace(fullMatch, '').trim();
                 }
+                break;
               }
             }
-            // 从朗读内容中移除指令
-            speakResponse = speakResponse.replace(/\[ACTION:OPENCMD\][^\n[]*/g, '').trim();
           }
 
           // 检查是否包含读取调试日志指令
@@ -1612,11 +1598,14 @@ ${errorText}`);
             // 清理用于朗读的内容，移除括号内的内容和标点符号
             const cleanedResponse = this.cleanResponse(speakResponse);
             console.log('清理后的AI回复（用于朗读）:', cleanedResponse);
-            actions.push(this.speakText(cleanedResponse));
+            actions.push({ type: 'SPEAK', action: () => this.speakText(cleanedResponse) });
           }
 
-          // 并发执行所有动作
-          await Promise.all(actions);
+          // 串行执行所有动作
+          for (const action of actions) {
+            console.log(`正在执行动作: ${action.type}`);
+            await action.action();
+          }
 
           // 更新当前对话
           this.updateCurrentConversation();

@@ -1,3 +1,4 @@
+#[ACTION:OPENSOFTWARE]
 import subprocess
 import os
 import json

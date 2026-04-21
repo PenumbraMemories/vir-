@@ -9,7 +9,8 @@ import win32api
 import re
 import requests
 import time
-from typing import Dict, Optional
+import asyncio
+from typing import Dict, Optional, List
 
 
 # 配置日志
@@ -18,6 +19,85 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# 命令队列
+action_queue = asyncio.Queue()
+queue_processor_task = None
+
+async def action_queue_processor():
+    """
+    异步处理命令队列中的命令
+    """
+    global queue_processor_task
+    logger.info("启动命令队列处理器")
+    
+    while True:
+        try:
+            # 从队列中获取命令
+            action_data = await action_queue.get()
+            logger.info(f"从队列中获取命令: {action_data['action_type']}")
+            
+            # 执行命令
+            action_type = action_data['action_type']
+            if action_type == "TOPWINDOWS":
+                result = set_window_topmost(action_data['params']['window_title'])
+                action_data['result_queue'].put_nowait({
+                    "action": "set_window_topmost",
+                    "success": result.get("success", False),
+                    "message": result.get("message", ""),
+                    "details": {
+                        "window": result.get("window")
+                    }
+                })
+            elif action_type == "SCREENSHOT":
+                result = call_screenshot_service(action_data['params']['message'])
+                action_data['result_queue'].put_nowait({
+                    "action": "screenshot",
+                    "success": result.get("success", False),
+                    "message": result.get("message", ""),
+                    "details": {
+                        "screenshot_path": result.get("screenshot_path"),
+                        "screenshot_url": result.get("screenshot_url")
+                    }
+                })
+            elif action_type == "NOWWINDOWS":
+                try:
+                    windows = get_all_windows()
+                    action_data['result_queue'].put_nowait({
+                        "action": "get_windows",
+                        "success": True,
+                        "message": f"成功获取 {len(windows)} 个窗口",
+                        "details": {
+                            "windows": windows
+                        }
+                    })
+                except Exception as e:
+                    logger.error(f"获取窗口失败: {str(e)}")
+                    action_data['result_queue'].put_nowait({
+                        "action": "get_windows",
+                        "success": False,
+                        "message": f"获取窗口失败: {str(e)}",
+                        "details": None
+                    })
+            
+            # 标记任务完成
+            action_queue.task_done()
+            logger.info(f"命令执行完成: {action_type}")
+
+            # 等待1秒再处理下一个命令
+            await asyncio.sleep(1)
+            
+        except Exception as e:
+            logger.error(f"处理命令队列时发生错误: {str(e)}", exc_info=True)
+
+async def start_queue_processor():
+    """
+    启动命令队列处理器
+    """
+    global queue_processor_task
+    if queue_processor_task is None or queue_processor_task.done():
+        queue_processor_task = asyncio.create_task(action_queue_processor())
+        logger.info("命令队列处理器已启动")
 
 def get_all_windows():
     """
@@ -106,6 +186,14 @@ def set_window_topmost(window_title: str) -> Dict:
 
             # 释放Alt键
             win32api.keybd_event(0x12, 0, 2, 0)  # ALT up
+
+            # 取消置顶状态，使窗口不再保持置顶
+            win32gui.SetWindowPos(
+                matched_window["handle"],
+                win32con.HWND_NOTOPMOST,
+                0, 0, 0, 0,
+                win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_SHOWWINDOW | win32con.SWP_NOACTIVATE
+            )
 
             # 强制激活窗口（带错误处理）
             try:
@@ -325,7 +413,7 @@ def parse_ai_actions(message: str) -> Dict:
 
     return actions
 
-def process_ai_message(message: str) -> Dict:
+async def process_ai_message(message: str) -> Dict:
     """
     处理AI消息，根据标记调用相应的服务
     
@@ -335,8 +423,14 @@ def process_ai_message(message: str) -> Dict:
     Returns:
         Dict: 处理结果
     """
+    # 确保队列处理器已启动
+    await start_queue_processor()
+    
     actions = parse_ai_actions(message)
     results = []
+    
+    # 创建结果队列
+    result_queue = asyncio.Queue()
     
     # 处理发送QQ消息操作
     if actions["SELECTFRIEND"] and actions["SENDMESSAGE"]:
@@ -352,54 +446,46 @@ def process_ai_message(message: str) -> Dict:
             }
         })
     
-    # 处理获取窗口操作
+    # 收集获取窗口操作
     if actions["NOWWINDOWS"]:
         logger.info("检测到获取窗口操作")
-        try:
-            windows = get_all_windows()
-            results.append({
-                "action": "get_windows",
-                "success": True,
-                "message": f"成功获取 {len(windows)} 个窗口",
-                "details": {
-                    "windows": windows
-                }
-            })
-        except Exception as e:
-            logger.error(f"获取窗口失败: {str(e)}")
-            results.append({
-                "action": "get_windows",
-                "success": False,
-                "message": f"获取窗口失败: {str(e)}",
-                "details": None
-            })
+        serial_actions.append({
+            "action_type": "NOWWINDOWS",
+            "params": {},
+            "result_queue": result_queue
+        })
     
-    # 处理截图操作
+    # 收集截图操作
     if actions["SCREENSHOT"]:
         logger.info("检测到截图操作")
-        result = call_screenshot_service(message)
-        results.append({
-            "action": "screenshot",
-            "success": result.get("success", False),
-            "message": result.get("message", ""),
-            "details": {
-                "screenshot_path": result.get("screenshot_path"),
-                "screenshot_url": result.get("screenshot_url")
-            }
+        serial_actions.append({
+            "action_type": "SCREENSHOT",
+            "params": {"message": message},
+            "result_queue": result_queue
         })
     
-    # 处理置顶窗口操作
+    # 收集需要串行执行的命令
+    serial_actions = []
+    
+    # 收集置顶窗口操作
     if actions["TOPWINDOWS"]:
         logger.info(f"检测到置顶窗口操作: {actions['TOPWINDOWS']}")
-        result = set_window_topmost(actions["TOPWINDOWS"])
-        results.append({
-            "action": "set_window_topmost",
-            "success": result.get("success", False),
-            "message": result.get("message", ""),
-            "details": {
-                "window": result.get("window")
-            }
+        serial_actions.append({
+            "action_type": "TOPWINDOWS",
+            "params": {"window_title": actions["TOPWINDOWS"]},
+            "result_queue": result_queue
         })
+    
+    # 将命令添加到队列中
+    for action in serial_actions:
+        await action_queue.put(action)
+        logger.info(f"已将命令添加到队列: {action['action_type']}")
+    
+    # 等待所有命令执行完成
+    for _ in range(len(serial_actions)):
+        result = await result_queue.get()
+        results.append(result)
+        logger.info(f"命令执行结果: {result['action']} - {result['success']}")
 
     return {
         "success": all(r["success"] for r in results) if results else True,

@@ -1,4 +1,5 @@
-
+#执行TOPWINDOWS
+#执行终端命令捕获输出[OPENCMD]
 from fastapi import FastAPI, Body
 from fastapi.middleware.cors import CORSMiddleware
 import logging
