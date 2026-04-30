@@ -1,3 +1,5 @@
+#[ACTION:OPENWEBSITE]
+#8004
 from fastapi import FastAPI, Body
 from fastapi.middleware.cors import CORSMiddleware
 import webbrowser

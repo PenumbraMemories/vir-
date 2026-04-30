@@ -1,6 +1,7 @@
-#[ACTION:SEND]
+#[ACTION:SENDMESSAGE]
 #[ACTION:SELECTFRIEND]
 #[ACTION:SENDFILE]
+#8002
 import win32gui
 import win32con
 import win32api
@@ -9,12 +10,13 @@ import time
 import re
 import os
 import logging
-from ctypes import wintypes, windll, c_int, c_uint, c_bool, POINTER, byref
+from ctypes import c_bool, byref
 from fastapi import FastAPI, Body
 from fastapi.middleware.cors import CORSMiddleware
-from pathlib import Path
 import ctypes
-from ctypes import wintypes
+import subprocess
+import shutil
+import tempfile
 
 # 配置日志
 logging.basicConfig(
@@ -40,6 +42,7 @@ SPI_GETFOREGROUNDLOCKTIMEOUT = 0x2000
 INPUT_KEYBOARD = 1
 KEYEVENTF_KEYUP = 0x0002
 KEYEVENTF_SCANCODE = 0x0008
+CF_HDROP = 15  # 文件拖拽剪贴板格式
 
 # 定义输入结构体
 class KEYBDINPUT(ctypes.Structure):
@@ -66,6 +69,7 @@ class INPUT(ctypes.Structure):
 # 加载user32.dll
 user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
+shell32 = ctypes.windll.shell32
 
 def disable_foreground_lock_timeout():
     """禁用前台锁定超时（需要管理员权限）"""
@@ -478,8 +482,59 @@ def validate_file_path(file_path: str) -> str:
         logger.error(f"验证文件路径时出错: {e}")
         return None
 
-def copy_file_to_clipboard(file_path: str) -> bool:
-    """复制文件到剪贴板"""
+def copy_files_to_clipboard(file_paths):
+    """将多个文件复制到剪贴板（改进版）"""
+    try:
+        # 创建临时文件列表
+        temp_dir = tempfile.mkdtemp()
+        file_list_path = os.path.join(temp_dir, "file_list.txt")
+        
+        # 写入文件路径
+        with open(file_list_path, "w", encoding="utf-8") as f:
+            for file_path in file_paths:
+                f.write(file_path + "\n")
+        
+        # 使用 PowerShell 复制文件到剪贴板
+        ps_script = f'''
+        Add-Type -AssemblyName System.Windows.Forms
+        $fileList = Get-Content "{file_list_path}"
+        $collection = New-Object System.Collections.Specialized.StringCollection
+        foreach ($file in $fileList) {{
+            $collection.Add($file)
+        }}
+        [System.Windows.Forms.Clipboard]::SetFileDropList($collection)
+        '''
+        
+        # 执行 PowerShell 脚本
+        result = subprocess.run(
+            ["powershell", "-Command", ps_script],
+            capture_output=True,
+            text=True
+        )
+        
+        if result.returncode == 0:
+            logger.info(f"成功复制 {len(file_paths)} 个文件到剪贴板")
+            # 清理临时文件
+            try:
+                shutil.rmtree(temp_dir)
+            except:
+                pass
+            return True
+        else:
+            logger.error(f"PowerShell 复制失败: {result.stderr}")
+            # 清理临时文件
+            try:
+                shutil.rmtree(temp_dir)
+            except:
+                pass
+            return False
+            
+    except Exception as e:
+        logger.error(f"复制文件到剪贴板失败: {e}", exc_info=True)
+        return False
+
+def copy_file_to_clipboard_v2(file_path: str) -> bool:
+    """复制文件到剪贴板（改进版 - 不依赖文件管理器窗口）"""
     try:
         logger.info(f"正在复制文件: {file_path}")
         
@@ -488,100 +543,186 @@ def copy_file_to_clipboard(file_path: str) -> bool:
             logger.error(f"文件不存在: {file_path}")
             return False
         
-        # 方法1：使用更可靠的方式打开文件管理器并选中文件
-        # 使用 /select 参数打开文件管理器并选中文件
-        os.system(f'explorer /select,"{file_path}"')
-        time.sleep(1.5)
-
-        # 查找文件窗口（尝试多个类名）
-        file_window = None
-        start_time = time.time()
-        window_classes = ["CabinetWClass", "ExploreWClass", "Progman", "Shell_TrayWnd"]
+        # 方法1：使用 PowerShell（最可靠）
+        logger.info("方法1: 使用 PowerShell 复制文件")
+        ps_script = f'''
+        Add-Type -AssemblyName System.Windows.Forms
+        $fileList = New-Object System.Collections.Specialized.StringCollection
+        $fileList.Add("{file_path}")
+        [System.Windows.Forms.Clipboard]::SetFileDropList($fileList)
+        '''
         
-        while time.time() - start_time < 5:
-            for class_name in window_classes:
-                file_window = win32gui.FindWindow(class_name, None)
-                if file_window and win32gui.IsWindowVisible(file_window):
-                    break
-            if file_window:
-                break
-            time.sleep(0.5)
-            
-        if not file_window:
-            logger.warning("未找到文件窗口，尝试直接复制文件路径")
-            # 备用方案：直接复制文件路径到剪贴板
+        result = subprocess.run(
+            ["powershell", "-Command", ps_script],
+            capture_output=True,
+            text=True
+        )
+        
+        if result.returncode == 0:
+            logger.info("PowerShell 复制成功")
+            # 验证剪贴板内容
+            return verify_clipboard_files()
+        else:
+            logger.warning(f"PowerShell 复制失败: {result.stderr}")
+        
+        # 方法2：使用 shell32 的 API
+        logger.info("方法2: 使用 shell32 API 复制文件")
+        try:
+            # 使用 DragQueryFile 方式
             win32clipboard.OpenClipboard()
             win32clipboard.EmptyClipboard()
-            win32clipboard.SetClipboardText(file_path, win32clipboard.CF_UNICODETEXT)
-            win32clipboard.CloseClipboard()
+            
+            # 创建 HDROP 格式
+            file_path_win = file_path + '\0\0'  # 双空字符结尾
+            file_path_bytes = file_path_win.encode('utf-16le')
+            
+            # 分配全局内存
+            hglobal = kernel32.GlobalAlloc(0x0042, len(file_path_bytes))
+            if hglobal:
+                locked = kernel32.GlobalLock(hglobal)
+                ctypes.memmove(locked, file_path_bytes, len(file_path_bytes))
+                kernel32.GlobalUnlock(hglobal)
+                win32clipboard.SetClipboardData(CF_HDROP, hglobal)
+                win32clipboard.CloseClipboard()
+                logger.info("shell32 API 复制成功")
+                return verify_clipboard_files()
+        except Exception as e:
+            logger.warning(f"shell32 API 复制失败: {e}")
+        
+        # 方法3：使用旧的 explorer 方法作为备选
+        logger.info("方法3: 使用 explorer 方法复制文件")
+        # 创建一个临时脚本文件
+        temp_dir = tempfile.mkdtemp()
+        script_path = os.path.join(temp_dir, "copy_file.vbs")
+        
+        vbs_script = f'''
+        Set objShell = CreateObject("Shell.Application")
+        Set objFolder = objShell.NameSpace(0)
+        Set objFolderItem = objFolder.ParseName("{file_path}")
+        If Not objFolderItem Is Nothing Then
+            objFolderItem.InvokeVerb("Copy")
+        End If
+        '''
+        
+        with open(script_path, 'w', encoding='utf-8') as f:
+            f.write(vbs_script)
+        
+        # 执行 VBS 脚本
+        subprocess.run(["wscript.exe", script_path], timeout=3)
+        time.sleep(1)
+        
+        # 清理临时文件
+        try:
+            shutil.rmtree(temp_dir)
+        except:
+            pass
+        
+        # 验证复制是否成功
+        if verify_clipboard_files():
+            logger.info("VBS 复制成功")
             return True
-
-        # 激活文件窗口
-        activate_window(file_window)
-        time.sleep(0.5)
-
-        # 复制文件 (Ctrl+C)
-        win32api.keybd_event(win32con.VK_CONTROL, 0, 0, 0)
-        time.sleep(0.1)
-        win32api.keybd_event(ord('C'), 0x2E, 0, 0)
-        time.sleep(0.2)
-        win32api.keybd_event(ord('C'), 0x2E, win32con.KEYEVENTF_KEYUP, 0)
-        time.sleep(0.1)
-        win32api.keybd_event(win32con.VK_CONTROL, 0, win32con.KEYEVENTF_KEYUP, 0)
-        time.sleep(1.0)
-
-        # 关闭文件资源管理器
-        win32gui.PostMessage(file_window, win32con.WM_CLOSE, 0, 0)
-        time.sleep(0.5)
-
-        logger.info("文件复制成功")
-        return True
+        else:
+            logger.error("所有复制方法都失败了")
+            return False
+            
     except Exception as e:
         logger.error(f"复制文件失败: {e}", exc_info=True)
         return False
 
+def verify_clipboard_files():
+    """验证剪贴板中是否有文件"""
+    try:
+        win32clipboard.OpenClipboard()
+        try:
+            # 检查剪贴板中是否有文件
+            if win32clipboard.IsClipboardFormatAvailable(CF_HDROP):
+                logger.info("剪贴板验证成功：文件已复制")
+                win32clipboard.CloseClipboard()
+                return True
+            else:
+                logger.warning("剪贴板验证失败：没有文件数据")
+                win32clipboard.CloseClipboard()
+                return False
+        except:
+            win32clipboard.CloseClipboard()
+            return False
+    except Exception as e:
+        logger.error(f"验证剪贴板失败: {e}")
+        return False
+
 def paste_and_send_file_to_chat(chat_hwnd=None) -> bool:
-    """在聊天窗口中粘贴并发送文件"""
+    """在聊天窗口中粘贴并发送文件（改进版）"""
     try:
         if not chat_hwnd:
             chat_hwnd = win32gui.GetForegroundWindow()
         
         # 确保聊天窗口是激活状态
         logger.info("确保聊天窗口激活...")
-        activate_window(chat_hwnd)
+        if not activate_window(chat_hwnd):
+            logger.error("无法激活聊天窗口")
+            return False
+        
         time.sleep(0.5)
         
         # 点击输入区域确保焦点
         logger.info("点击输入区域...")
-        click_input_area(chat_hwnd)
+        if not click_input_area(chat_hwnd):
+            logger.error("无法点击输入区域")
+            return False
+        
         time.sleep(0.5)
         
-        # 粘贴文件 (Ctrl+V)
-        logger.info("粘贴文件...")
+        # 清空可能的输入框内容（可选）
         win32api.keybd_event(win32con.VK_CONTROL, 0, 0, 0)
         time.sleep(0.1)
-        win32api.keybd_event(ord('V'), 0x2F, 0, 0)
-        time.sleep(0.2)
-        win32api.keybd_event(ord('V'), 0x2F, win32con.KEYEVENTF_KEYUP, 0)
+        win32api.keybd_event(ord('A'), 0x1E, 0, 0)
+        time.sleep(0.1)
+        win32api.keybd_event(ord('A'), 0x1E, win32con.KEYEVENTF_KEYUP, 0)
         time.sleep(0.1)
         win32api.keybd_event(win32con.VK_CONTROL, 0, win32con.KEYEVENTF_KEYUP, 0)
-        time.sleep(1.5)  # 增加等待时间，让文件上传
-
+        time.sleep(0.2)
+        
+        # 粘贴文件 (Ctrl+V) - 尝试多次
+        paste_success = False
+        for attempt in range(3):
+            logger.info(f"粘贴文件尝试 {attempt + 1}/3...")
+            
+            # 使用 Ctrl+V
+            win32api.keybd_event(win32con.VK_CONTROL, 0, 0, 0)
+            time.sleep(0.1)
+            win32api.keybd_event(ord('V'), 0x2F, 0, 0)
+            time.sleep(0.2)
+            win32api.keybd_event(ord('V'), 0x2F, win32con.KEYEVENTF_KEYUP, 0)
+            time.sleep(0.1)
+            win32api.keybd_event(win32con.VK_CONTROL, 0, win32con.KEYEVENTF_KEYUP, 0)
+            time.sleep(1.5)  # 增加等待时间，让文件上传
+            
+            # 检查是否有文件正在上传（可以通过等待更长时间来判断）
+            time.sleep(1)
+            paste_success = True
+            break
+        
+        if not paste_success:
+            logger.error("粘贴文件失败")
+            return False
+        
         # 发送文件 (回车)
         logger.info("发送文件...")
-        win32api.keybd_event(win32con.VK_RETURN, 0x1C, 0, 0)
-        time.sleep(0.2)
-        win32api.keybd_event(win32con.VK_RETURN, 0x1C, win32con.KEYEVENTF_KEYUP, 0)
-        time.sleep(1.0)
-
+        for attempt in range(2):
+            win32api.keybd_event(win32con.VK_RETURN, 0x1C, 0, 0)
+            time.sleep(0.2)
+            win32api.keybd_event(win32con.VK_RETURN, 0x1C, win32con.KEYEVENTF_KEYUP, 0)
+            time.sleep(1.0)
+        
         logger.info("文件粘贴并发送成功")
         return True
+        
     except Exception as e:
         logger.error(f"粘贴发送文件失败: {e}", exc_info=True)
         return False
 
 def send_qq_file_with_full_flow(friend_name, file_path):
-    """完整的发送文件流程"""
+    """完整的发送文件流程（改进版）"""
     logger.info(f"开始完整流程发送文件给 {friend_name}: {file_path}")
     
     # 步骤0：验证文件路径
@@ -627,15 +768,23 @@ def send_qq_file_with_full_flow(friend_name, file_path):
                 logger.error(f"未找到 {friend_name} 的聊天窗口")
                 return False
         
-        # 步骤4：复制文件
+        # 步骤4：复制文件到剪贴板
         logger.info(f"步骤3: 复制文件 {validated_path}")
-        if not copy_file_to_clipboard(validated_path):
+        if not copy_file_to_clipboard_v2(validated_path):
             logger.error("复制文件失败")
             return False
         
+        # 额外验证剪贴板
+        if not verify_clipboard_files():
+        
         # 步骤5：切换到聊天窗口并发送
+            logger.error("剪贴板验证失败")
+            return False
         logger.info("步骤4: 切换到聊天窗口")
-        activate_window(chat_hwnd)
+        if not activate_window(chat_hwnd):
+            logger.error("无法激活聊天窗口")
+            return False
+        
         time.sleep(0.5)
         
         logger.info("步骤5: 粘贴并发送文件")

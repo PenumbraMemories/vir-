@@ -52,22 +52,7 @@
               <span class="slider round"></span>
             </label>
           </div>
-          <div class="manual-input">
-            <h3>手动输入朗读</h3>
-            <textarea
-              v-model="textToSpeak"
-              placeholder="请输入要转换的文字"
-              rows="4"
-            ></textarea>
-            <div class="tts-buttons">
-              <button @click="speakText" :disabled="isSpeaking">
-                {{ isSpeaking ? '正在播放...' : '播放语音' }}
-              </button>
-              <button @click="stopSpeaking" :disabled="!isSpeaking">
-                停止播放
-              </button>
-            </div>
-          </div>
+
           <audio ref="audioPlayer" controls style="display:none"></audio>
         </div>
       </div>
@@ -148,7 +133,6 @@ export default {
   },
   data() {
     return {
-      textToSpeak: '',
       isSpeaking: false,
       autoSpeak: false,
       isRecording: false,
@@ -158,7 +142,7 @@ export default {
       audioBuffer: [],
       lastBotMessage: '',
       lastScreenshotPath: '',
-      difyApiKey: 'app-O02XuoibLlIrRgJ54WbNayWr',
+      difyApiKey: 'app-SVhIZiPICq29UarKTCtcpZb5',
       difyApiUrl: 'https://api.dify.ai/v1',
       conversationId: null,
       userId: 'user-' + Math.random().toString(36).substring(7),
@@ -170,53 +154,6 @@ export default {
       isAlwaysOnTop: false,
       isDarkMode: true,
       showDebugPanel: false,
-      agentAvatars: [
-        'https://images.unsplash.com/photo-1470071459604-3b5ec3a7fe05?w=700&auto=format&fit=crop&q=60',
-        'https://images.unsplash.com/photo-1441974231531-c6227db76b6e?w=700&auto=format&fit=crop&q=60',
-        'https://images.unsplash.com/photo-1501854140801-50d01698950b?w=700&auto=format&fit=crop&q=60',
-        'https://images.unsplash.com/photo-1506905925346-21bda4d32df4?w=700&auto=format&fit=crop&q=60',
-        'https://images.unsplash.com/photo-1469474968028-56623f02e42e?w=700&auto=format&fit=crop&q=60',
-        'https://images.unsplash.com/photo-1475924156734-496f6cac6ec1?w=700&auto=format&fit=crop&q=60',
-        'https://images.unsplash.com/photo-1501785888041-af3ef285b470?w=700&auto=format&fit=crop&q=60',
-        'https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?w=700&auto=format&fit=crop&q=60',
-        'https://images.unsplash.com/photo-1472214103451-9374bd1c798e?w=700&auto=format&fit=crop&q=60',
-        'https://images.unsplash.com/photo-1433086966358-54859d0ed716?w=700&auto=format&fit=crop&q=60',
-        'https://images.unsplash.com/photo-1502082553048-f009c37129b9?w=700&auto=format&fit=crop&q=60',
-        'https://images.unsplash.com/photo-1476514525535-07fb3b4ae5f1?w=700&auto=format&fit=crop&q=60',
-        'https://images.unsplash.com/photo-1447752875215-b2761acb3c5d?w=700&auto=format&fit=crop&q=60',
-        'https://images.unsplash.com/photo-1470071459604-3b5ec3a7fe05?w=700&auto=format&fit=crop&q=60',
-        'https://images.unsplash.com/photo-1441974231531-c6227db76b6e?w=700&auto=format&fit=crop&q=60',
-        'https://images.unsplash.com/photo-1501854140801-50d01698950b?w=700&auto=format&fit=crop&q=60',
-        'https://images.unsplash.com/photo-1506905925346-21bda4d32df4?w=700&auto=format&fit=crop&q=60',
-        'https://images.unsplash.com/photo-1469474968028-56623f02e42e?w=700&auto=format&fit=crop&q=60',
-        'https://images.unsplash.com/photo-1475924156734-496f6cac6ec1?w=700&auto=format&fit=crop&q=60',
-        'https://images.unsplash.com/photo-1501785888041-af3ef285b470?w=700&auto=format&fit=crop&q=60',
-        'https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?w=700&auto=format&fit=crop&q=60',
-        'https://images.unsplash.com/photo-1472214103451-9374bd1c798e?w=700&auto=format&fit=crop&q=60',
-        'https://images.unsplash.com/photo-1433086966358-54859d0ed716?w=700&auto=format&fit=crop&q=60',
-        'https://images.unsplash.com/photo-1502082553048-f009c37129b9?w=700&auto=format&fit=crop&q=60',
-        'https://images.unsplash.com/photo-1476514525535-07fb3b4ae5f1?w=700&auto=format&fit=crop&q=60',
-        'https://images.unsplash.com/photo-1447752875215-b2761acb3c5d?w=700&auto=format&fit=crop&q=60',
-        'https://images.unsplash.com/photo-1470071459604-3b5ec3a7fe05?w=700&auto=format&fit=crop&q=60',
-        'https://images.unsplash.com/photo-1441974231531-c6227db76b6e?w=700&auto=format&fit=crop&q=60',
-        'https://images.unsplash.com/photo-1501854140801-50d01698950b?w=700&auto=format&fit=crop&q=60',
-        'https://images.unsplash.com/photo-1506905925346-21bda4d32df4?w=700&auto=format&fit=crop&q=60',
-        'https://images.unsplash.com/photo-1469474968028-56623f02e42e?w=700&auto=format&fit=crop&q=60',
-        'https://images.unsplash.com/photo-1475924156734-496f6cac6ec1?w=700&auto=format&fit=crop&q=60',
-        'https://images.unsplash.com/photo-1501785888041-af3ef285b470?w=700&auto=format&fit=crop&q=60',
-        'https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?w=700&auto=format&fit=crop&q=60',
-        'https://images.unsplash.com/photo-1472214103451-9374bd1c798e?w=700&auto=format&fit=crop&q=60',
-        'https://images.unsplash.com/photo-1433086966358-54859d0ed716?w=700&auto=format&fit=crop&q=60',
-        'https://images.unsplash.com/photo-1502082553048-f009c37129b9?w=700&auto=format&fit=crop&q=60',
-        'https://images.unsplash.com/photo-1476514525535-07fb3b4ae5f1?w=700&auto=format&fit=crop&q=60',
-        'https://images.unsplash.com/photo-1447752875215-b2761acb3c5d?w=700&auto=format&fit=crop&q=60',
-        'https://images.unsplash.com/photo-1470071459604-3b5ec3a7fe05?w=700&auto=format&fit=crop&q=60',
-        'https://images.unsplash.com/photo-1441974231531-c6227db76b6e?w=700&auto=format&fit=crop&q=60',
-        'https://images.unsplash.com/photo-1501854140801-50d01698950b?w=700&auto=format&fit=crop&q=60',
-        'https://images.unsplash.com/photo-1506905925346-21bda4d32df4?w=700&auto=format&fit=crop&q=60',
-        'https://images.unsplash.com/photo-1469474968028-56623f02e42e?w=700&auto=format&fit=crop&q=60',
-        'https://images.unsplash.com/photo-1475924156734-496f6cac6ec1?w=700&auto=format&fit=crop&q=60'
-      ],
       conversations: [],
       currentConversationId: null,
       showSidebar: true
@@ -650,21 +587,10 @@ export default {
       }
     },
     async speakText(text) {
-      // 处理传入的参数，确保是字符串类型
-      let textToProcess = text || this.textToSpeak;
-
-      // 如果传入的是事件对象，使用textToSpeak
-      if (text && typeof text !== 'string' && text.target) {
-        textToProcess = this.textToSpeak;
-      }
-
-      // 确保textToProcess是字符串类型
-      textToProcess = String(textToProcess || '');
+      // 确保text是字符串类型
+      const textToProcess = String(text || '');
 
       if (!textToProcess.trim()) {
-        if (!text) {
-          alert('请输入要转换的文字');
-        }
         return;
       }
 
@@ -1161,7 +1087,7 @@ export default {
     async getWindows() {
       try {
         console.log('正在获取窗口列表...');
-        const response = await fetch('http://localhost:8005/get_windows', {
+        const response = await fetch('http://localhost:8020/get_windows', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json'
@@ -1246,27 +1172,16 @@ export default {
           message: `置顶窗口结果: ${JSON.stringify(result)}`
         });
 
-        if (result.success && result.results && result.results.length > 0) {
-          const topResult = result.results.find(r => r.action === 'set_window_topmost');
-          if (topResult && topResult.success) {
-            const successMessage = `成功置顶窗口: ${topResult.details.window.title}`;
-            console.log(successMessage);
-            this.$refs.debugPanel?.addLog({
-              timestamp: new Date().toISOString(),
-              type: 'success',
-              message: successMessage
-            });
-          } else {
-            const errorMessage = `置顶窗口失败: ${topResult ? topResult.message : '未知错误'}`;
-            console.error(errorMessage);
-            this.$refs.debugPanel?.addLog({
-              timestamp: new Date().toISOString(),
-              type: 'error',
-              message: errorMessage
-            });
-          }
+        if (result.success) {
+          const successMessage = `成功置顶窗口: ${windowTitle}`;
+          console.log(successMessage);
+          this.$refs.debugPanel?.addLog({
+            timestamp: new Date().toISOString(),
+            type: 'success',
+            message: successMessage
+          });
         } else {
-          const errorMessage = `置顶窗口失败: ${result.message}`;
+          const errorMessage = `置顶窗口失败: ${result.message || '未知错误'}`;
           console.error(errorMessage);
           this.$refs.debugPanel?.addLog({
             timestamp: new Date().toISOString(),
