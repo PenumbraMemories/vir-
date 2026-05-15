@@ -1,0 +1,35 @@
+# 前端依赖和构建文件
+node_modules/
+dist/
+.vite/
+
+# 后端虚拟环境和缓存
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# 环境变量和配置
+.env
+.env.local
+.env.*.local
+
+# 日志文件
+logs/
+*.log
+
+# 操作系统生成文件
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE 配置（如果不想共享）
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 临时文件
+*.tmp
+*.temp
