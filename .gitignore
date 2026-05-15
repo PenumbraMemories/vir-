@@ -1,6 +1,7 @@
 # 前端依赖和构建文件
 node_modules/
 dist/
+dist_electron/bundled
 dist_electron/
 .vite/
 
